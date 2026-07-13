@@ -1,1 +1,0 @@
-# hubscape-agent-core

@@ -68,7 +68,45 @@ from google.cloud import logging as google_cloud_logging
 from vertexai.preview.reasoning_engines import A2aAgent
 
 from app.core import hubscape_adk
-from app.agent import app as adk_app
+
+# 1. Dynamically import the developer's agent
+from app.agent import root_agent
+
+# 2. Load instructions from SKILL.md automatically
+import re
+runtime_dir = os.path.dirname(os.path.abspath(__file__)) # core/
+app_dir = os.path.dirname(runtime_dir)                    # app/
+skill_md_path = os.path.join(app_dir, "SKILL.md")
+system_instruction = "You are a highly efficient Task Manager agent."
+if os.path.exists(skill_md_path):
+    with open(skill_md_path, "r", encoding="utf-8") as f:
+        skill_content = f.read()
+    system_instruction = re.sub(r"^---.*?---", "", skill_content, flags=re.DOTALL).strip()
+root_agent.instruction = system_instruction
+
+# 3. Load the tools (system tools + custom scripts) automatically
+from app.core.load_local_tools import load_local_tools
+scripts_dir = os.path.join(app_dir, "scripts")
+system_tools_dir = os.path.join(runtime_dir, "system_tools")
+
+developer_tools = getattr(root_agent, "tools", []) or []
+root_agent.tools = developer_tools + load_local_tools(system_tools_dir) + load_local_tools(scripts_dir)
+
+# 4. Resolve the model automatically
+from app.app_utils.vertex_gemini import get_model
+model_config = getattr(root_agent, "model", None)
+if isinstance(model_config, str) or model_config is None:
+    model_name = model_config or "gemini-2.5-flash"
+    root_agent.model = get_model(model_name)
+
+# 5. Initialize the GEAP App Wrapper and Serialization Targets
+from app.core.geap_agent_wrapper import GEAPAgentWrapper
+adk_app = App(
+    root_agent=root_agent,
+    name="app",
+)
+agent_app = GEAPAgentWrapper(root_agent)
+
 from app.app_utils.telemetry import setup_telemetry
 from app.app_utils.typing import Feedback
 
@@ -413,7 +451,6 @@ class AgentEngineApp(A2aAgent):
         Returns the metadata card of the agent and all its tools.
         Used by the platform Host core during GitOps deploys or sync sweeps.
         """
-        from app.agent import app as adk_app
         root_agent = getattr(adk_app, "root_agent", None)
         agent_name = root_agent.name.replace('_', '-') if root_agent and hasattr(root_agent, "name") else "custom-agent"
         agent_desc = root_agent.description if root_agent and hasattr(root_agent, "description") else "Custom Agent"
